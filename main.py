@@ -47,7 +47,7 @@ batch_size = 100
 num_samples = data.shape[0]
 
 # number of epochs
-epochs = 100  # 3000
+epochs = 3000
 # number of (mini batch) updates performed per epoch
 num_batches = int(num_samples / batch_size)
 # how much to decay the learning rate

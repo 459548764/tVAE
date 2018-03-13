@@ -9,9 +9,8 @@ import deepdish as dd
 
 class tVAE:
     """
-    Variational Autoencoder with Embedded Student's t Mixture Model for Robust Clustering
+    Variational Autoencoder with Embedded Student-t Mixture Model
     """
-
     def __init__(self,
                  d_x,  # latent space dimension
                  d_o,  # dimension of observation space
@@ -149,7 +148,8 @@ class tVAE:
         xi["Sigma_k"] = []
         for k in range(self.K):
             xi["Sigma_k"].append(
-                tf.matmul(C_k[k, :, :], C_k[k, :, :], transpose_b=True) + tf.multiply(self.sigma_k_2, tf.eye(self.d_x, dtype=tf.float32)))
+                tf.matmul(C_k[k, :, :], C_k[k, :, :], transpose_b=True)
+                + tf.multiply(self.sigma_k_2, tf.eye(self.d_x, dtype=tf.float32)))
         xi["Sigma_k"] = tf.convert_to_tensor(xi["Sigma_k"])
 
         # degrees of freedom
@@ -406,7 +406,8 @@ class tVAE:
         # compute log rho
         alpha_digamma = tf.reshape((alpha - 1) * tf.digamma(alpha + eps), [1, K])
         log_gamma_alpha = tf.reshape(tf.lgamma(alpha + eps), [1, K])
-        log_rho = log_qz + alpha_digamma + tf.log(beta + eps) - tf.reshape(alpha, [1, K]) - 0.5 * d_x * tf.log(2 * np.pi) - log_gamma_alpha
+        log_rho = log_qz + alpha_digamma + tf.log(beta + eps) \
+                  - tf.reshape(alpha, [1, K]) - 0.5 * d_x * tf.log(2 * np.pi) - log_gamma_alpha
         # cross entropy
         cross_entropy = -tf.reduce_sum(tf.multiply(gamma, log_rho))
 

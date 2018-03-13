@@ -153,14 +153,9 @@ for epoch in tbar:
     #############################
     # update plots and save model
     #############################
-    """
     if epoch % 5 == 0:
 
         # plots
         tvae.plot_results(data, path_pics, str(epoch))
         # save model
         #tvae.save_parameters(epoch, learning_rate_curve, dof_curve)
-    """
-
-writer = tf.summary.FileWriter("summary", tvae.sess.graph)
-

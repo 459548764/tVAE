@@ -65,8 +65,8 @@ class tVAE:
         # initialize model parameters
         #############################
 
-        # create placeholder for observed variables and labels (if available)
-        self.o, self.labels = self.create_placeholders()
+        # create placeholder for observed variables and posteriors
+        self.o, self.gamma = self.create_placeholders()
         # initialize variables for Gaussian mixture model
         self.xi, self.c_k, self.C_k = self.initialize_mixture_model(xi_init)
         # initialize encoder, decoder
@@ -102,18 +102,20 @@ class tVAE:
         ##################
 
         # update hyper-parameters
-        beta, alpha, log_qz, gamma = self.update_hyperparameter(mu_x, sigma_x)
+        beta, alpha, log_qz, log_rho = self.update_hyperparameter(mu_x, sigma_x)
+        # estimate posteriors
+        self.gamma_est = tf.nn.softmax(log_qz)
 
         ###########################################
         # loss function + learning rate + optimizer
         ###########################################
         # loss
-        self.loss, self.loss_pretrain, self.neg_log_like, self.neg_entropy, self.neg_cross_entropy, \
-        self.neg_cross_entropy_pretrain = self.compute_loss_function(gamma, log_qz, alpha, beta, mu_o, sigma_o, sigma_x)
+        self.loss, self.neg_log_like, self.neg_entropy, self.neg_cross_entropy \
+            = self.compute_loss_function(self.gamma, log_rho, mu_o, sigma_o, sigma_x)
         # learning rate
         self.learning_rate, self.global_step = self.define_learning_rate()
         # optimizer
-        self.optimizer, self.optimizer_pretrain = self.define_optimizer()
+        self.optimizer = self.define_optimizer()
 
         #########################################
         # launch session and initialize variables
@@ -126,9 +128,9 @@ class tVAE:
         # placeholder for observed variables
         o = tf.placeholder(dtype=tf.float32, shape=[None, self.d_o], name="o")
         # placeholder for corresponding labels
-        labels = tf.placeholder(dtype=tf.float32, shape=[None, self.K], name="labels")
+        gamma = tf.placeholder(dtype=tf.float32, shape=[None, self.K], name="labels")
 
-        return o, labels
+        return o, gamma
 
     def initialize_mixture_model(self, xi_init):
 
@@ -325,23 +327,23 @@ class tVAE:
         # from list tensor with size = [?, K]
         log_qz = tf.transpose(tf.convert_to_tensor(log_qz))
 
-        ###############
-        # compute gamma
-        ###############
-        gamma = tf.nn.softmax(log_qz)
+        #################
+        # compute log rho
+        #################
+        alpha_digamma = tf.reshape((alpha - 1) * tf.digamma(alpha + eps), [1, self.K])
+        log_gamma_alpha = tf.reshape(tf.lgamma(alpha + eps), [1, self.K])
+        log_rho = log_qz + alpha_digamma + tf.log(beta + eps) - tf.reshape(alpha, [1, self.K]) \
+                  - 0.5 * self.d_x * tf.log(2 * np.pi) - log_gamma_alpha
 
-        return beta, alpha, log_qz, gamma
+        return beta, alpha, log_qz, log_rho
 
-    def compute_loss_function(self, gamma, log_qz, alpha, beta, mu_o, sigma_o, sigma_x):
+    def compute_loss_function(self, gamma, log_rho, mu_o, sigma_o, sigma_x):
 
         ##################################
         # calculate negative cross entropy
         ##################################
-        neg_cross_entropy = self.compute_neg_cross_entropy(gamma, log_qz, alpha, beta, self.K, self.d_x)
+        neg_cross_entropy = self.compute_neg_cross_entropy(gamma, log_rho)
         neg_cross_entropy /= self.batch_size
-        # pretrain
-        neg_cross_entropy_pretrain = self.compute_neg_cross_entropy(self.labels, log_qz, alpha, beta, self.K, self.d_x)
-        neg_cross_entropy_pretrain /= self.batch_size
 
         ############################################
         # calculate negative Gaussian log-likelihood
@@ -363,10 +365,8 @@ class tVAE:
         # combine all terms
         ###################
         loss = neg_log_like + neg_entropy + neg_cross_entropy
-        # pretrain
-        loss_pretrain = neg_log_like + neg_entropy + neg_cross_entropy_pretrain
 
-        return loss, loss_pretrain, neg_log_like, neg_entropy, neg_cross_entropy, neg_cross_entropy_pretrain
+        return loss, neg_log_like, neg_entropy, neg_cross_entropy
 
     def define_learning_rate(self):
 
@@ -386,28 +386,16 @@ class tVAE:
 
     def define_optimizer(self):
 
-        # for pre-training
-        adam_pretrain = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-        grads_and_vars = adam_pretrain.compute_gradients(self.loss_pretrain)
-        clipped_grads_and_vars = [(tf.clip_by_norm(grad, 1.0), var) for grad, var in grads_and_vars]
-        optimizer_pretrain = adam_pretrain.apply_gradients(clipped_grads_and_vars, global_step=self.global_step)
-
-        # again for unsupervised learning
         adam = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
         grads_and_vars = adam.compute_gradients(self.loss)
         clipped_grads_and_vars = [(tf.clip_by_norm(grad, 1.0), var) for grad, var in grads_and_vars]
         optimizer = adam.apply_gradients(clipped_grads_and_vars, global_step=self.global_step)
 
-        return optimizer, optimizer_pretrain
+        return optimizer
 
     @staticmethod
-    def compute_neg_cross_entropy(gamma, log_qz, alpha, beta, K, d_x, eps=1e-8):
+    def compute_neg_cross_entropy(gamma, log_rho):
 
-        # compute log rho
-        alpha_digamma = tf.reshape((alpha - 1) * tf.digamma(alpha + eps), [1, K])
-        log_gamma_alpha = tf.reshape(tf.lgamma(alpha + eps), [1, K])
-        log_rho = log_qz + alpha_digamma + tf.log(beta + eps) \
-                  - tf.reshape(alpha, [1, K]) - 0.5 * d_x * tf.log(2 * np.pi) - log_gamma_alpha
         # cross entropy
         cross_entropy = -tf.reduce_sum(tf.multiply(gamma, log_rho))
 
@@ -440,24 +428,29 @@ class tVAE:
         return log_like
 
     def update_supervised(self, o, labels):
-        # update model variables and compute loss
-        _, loss, loglike, entropy, cross_entropy = self.sess.run([self.optimizer_pretrain,
-                                                                  self.loss_pretrain,
-                                                                  self.neg_log_like,
-                                                                  self.neg_entropy,
-                                                                  self.neg_cross_entropy_pretrain],
-                                                                 feed_dict={self.o: o, self.labels: labels}
-                                                                 )
-        return loss, loglike, entropy, cross_entropy
 
-    def update_unsupervised(self, o):
         # update model variables and compute loss
         _, loss, loglike, entropy, cross_entropy = self.sess.run([self.optimizer,
                                                                   self.loss,
                                                                   self.neg_log_like,
                                                                   self.neg_entropy,
                                                                   self.neg_cross_entropy],
-                                                                 feed_dict={self.o: o}
+                                                                 feed_dict={self.o: o, self.gamma: labels}
+                                                                 )
+        return loss, loglike, entropy, cross_entropy
+
+    def update_unsupervised(self, o):
+
+        # estimate labels
+        gamma = self.sess.run(self.gamma_est, feed_dict={self.o: o})
+
+        # update model variables and compute loss
+        _, loss, loglike, entropy, cross_entropy = self.sess.run([self.optimizer,
+                                                                  self.loss,
+                                                                  self.neg_log_like,
+                                                                  self.neg_entropy,
+                                                                  self.neg_cross_entropy],
+                                                                 feed_dict={self.o: o, self.gamma: gamma}
                                                                  )
         return loss, loglike, entropy, cross_entropy
 
